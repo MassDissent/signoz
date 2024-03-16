@@ -68,6 +68,7 @@ export const QueryBuilderContext = createContext<QueryBuilderContextType>({
 	removeQueryBuilderEntityByIndex: () => {},
 	removeQueryTypeItemByIndex: () => {},
 	addNewBuilderQuery: () => {},
+	cloneQuery: () => {},
 	addNewFormula: () => {},
 	addNewQueryItem: () => {},
 	redirectWithQueryBuilderData: () => {},
@@ -100,7 +101,13 @@ export function QueryBuilderProvider({
 		null,
 	);
 
-	const [panelType, setPanelType] = useState<PANEL_TYPES | null>(null);
+	const panelTypeQueryParams = urlQuery.get(
+		QueryParams.panelTypes,
+	) as PANEL_TYPES | null;
+
+	const [panelType, setPanelType] = useState<PANEL_TYPES | null>(
+		panelTypeQueryParams,
+	);
 
 	const [currentQuery, setCurrentQuery] = useState<QueryState>(queryState);
 	const [stagedQuery, setStagedQuery] = useState<Query | null>(null);
@@ -301,6 +308,23 @@ export function QueryBuilderProvider({
 		[initialDataSource],
 	);
 
+	const cloneNewBuilderQuery = useCallback(
+		(queries: IBuilderQuery[], query: IBuilderQuery): IBuilderQuery => {
+			const existNames = queries.map((item) => item.queryName);
+			const clonedQuery: IBuilderQuery = {
+				...query,
+				queryName: createNewBuilderItemName({ existNames, sourceNames: alphabet }),
+				expression: createNewBuilderItemName({
+					existNames,
+					sourceNames: alphabet,
+				}),
+			};
+
+			return clonedQuery;
+		},
+		[],
+	);
+
 	const createNewBuilderFormula = useCallback((formulas: IBuilderFormula[]) => {
 		const existNames = formulas.map((item) => item.queryName);
 
@@ -366,6 +390,28 @@ export function QueryBuilderProvider({
 			};
 		});
 	}, [createNewBuilderQuery]);
+
+	const cloneQuery = useCallback(
+		(type: string, query: IBuilderQuery): void => {
+			setCurrentQuery((prevState) => {
+				if (prevState.builder.queryData.length >= MAX_QUERIES) return prevState;
+
+				const clonedQuery = cloneNewBuilderQuery(
+					prevState.builder.queryData,
+					query,
+				);
+
+				return {
+					...prevState,
+					builder: {
+						...prevState.builder,
+						queryData: [...prevState.builder.queryData, clonedQuery],
+					},
+				};
+			});
+		},
+		[cloneNewBuilderQuery],
+	);
 
 	const addNewFormula = useCallback(() => {
 		setCurrentQuery((prevState) => {
@@ -641,6 +687,7 @@ export function QueryBuilderProvider({
 			handleSetConfig,
 			removeQueryBuilderEntityByIndex,
 			removeQueryTypeItemByIndex,
+			cloneQuery,
 			addNewBuilderQuery,
 			addNewFormula,
 			addNewQueryItem,
@@ -665,6 +712,7 @@ export function QueryBuilderProvider({
 			handleSetConfig,
 			removeQueryBuilderEntityByIndex,
 			removeQueryTypeItemByIndex,
+			cloneQuery,
 			addNewBuilderQuery,
 			addNewFormula,
 			addNewQueryItem,

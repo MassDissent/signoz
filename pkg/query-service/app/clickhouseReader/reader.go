@@ -47,6 +47,7 @@ import (
 	"go.signoz.io/signoz/pkg/query-service/app/logs"
 	"go.signoz.io/signoz/pkg/query-service/app/services"
 	"go.signoz.io/signoz/pkg/query-service/auth"
+	"go.signoz.io/signoz/pkg/query-service/common"
 	"go.signoz.io/signoz/pkg/query-service/constants"
 	am "go.signoz.io/signoz/pkg/query-service/integrations/alertManager"
 	"go.signoz.io/signoz/pkg/query-service/interfaces"
@@ -142,6 +143,17 @@ func NewReader(
 		os.Exit(1)
 	}
 
+	return NewReaderFromClickhouseConnection(db, options, localDB, configFile, featureFlag, cluster)
+}
+
+func NewReaderFromClickhouseConnection(
+	db driver.Conn,
+	options *Options,
+	localDB *sqlx.DB,
+	configFile string,
+	featureFlag interfaces.FeatureLookup,
+	cluster string,
+) *ClickHouseReader {
 	alertManager, err := am.New("")
 	if err != nil {
 		zap.S().Errorf("msg: failed to initialize alert manager: ", "/t error:", err)
@@ -149,8 +161,10 @@ func NewReader(
 		os.Exit(1)
 	}
 
+	wrap := clickhouseConnWrapper{conn: db}
+
 	return &ClickHouseReader{
-		db:                      db,
+		db:                      wrap,
 		localDB:                 localDB,
 		TraceDB:                 options.primary.TraceDB,
 		alertManager:            alertManager,
@@ -744,33 +758,47 @@ func (r *ClickHouseReader) GetServicesList(ctx context.Context) (*[]string, erro
 	return &services, nil
 }
 
-func (r *ClickHouseReader) GetTopLevelOperations(ctx context.Context, skipConfig *model.SkipConfig) (*map[string][]string, *model.ApiError) {
+func (r *ClickHouseReader) GetTopLevelOperations(ctx context.Context, skipConfig *model.SkipConfig, start, end time.Time) (*map[string][]string, *map[string][]string, *model.ApiError) {
 
+	start = start.In(time.UTC)
+
+	// The `top_level_operations` that have `time` >= start
 	operations := map[string][]string{}
-	query := fmt.Sprintf(`SELECT DISTINCT name, serviceName FROM %s.%s`, r.TraceDB, r.topLevelOperationsTable)
+	// All top level operations for a service
+	allOperations := map[string][]string{}
+	query := fmt.Sprintf(`SELECT DISTINCT name, serviceName, time FROM %s.%s`, r.TraceDB, r.topLevelOperationsTable)
 
 	rows, err := r.db.Query(ctx, query)
 
 	if err != nil {
 		zap.S().Error("Error in processing sql query: ", err)
-		return nil, &model.ApiError{Typ: model.ErrorExec, Err: fmt.Errorf("Error in processing sql query")}
+		return nil, nil, &model.ApiError{Typ: model.ErrorExec, Err: fmt.Errorf("error in processing sql query")}
 	}
 
 	defer rows.Close()
 	for rows.Next() {
 		var name, serviceName string
-		if err := rows.Scan(&name, &serviceName); err != nil {
-			return nil, &model.ApiError{Typ: model.ErrorInternal, Err: fmt.Errorf("Error in reading data")}
+		var t time.Time
+		if err := rows.Scan(&name, &serviceName, &t); err != nil {
+			return nil, nil, &model.ApiError{Typ: model.ErrorInternal, Err: fmt.Errorf("error in reading data")}
 		}
 		if _, ok := operations[serviceName]; !ok {
 			operations[serviceName] = []string{}
 		}
+		if _, ok := allOperations[serviceName]; !ok {
+			allOperations[serviceName] = []string{}
+		}
 		if skipConfig.ShouldSkip(serviceName, name) {
 			continue
 		}
-		operations[serviceName] = append(operations[serviceName], name)
+		allOperations[serviceName] = append(allOperations[serviceName], name)
+		// We can't use the `end` because the `top_level_operations` table has the most recent instances of the operations
+		// We can only use the `start` time to filter the operations
+		if t.After(start) {
+			operations[serviceName] = append(operations[serviceName], name)
+		}
 	}
-	return &operations, nil
+	return &operations, &allOperations, nil
 }
 
 func (r *ClickHouseReader) GetServices(ctx context.Context, queryParams *model.GetServicesParams, skipConfig *model.SkipConfig) (*[]model.ServiceItem, *model.ApiError) {
@@ -779,7 +807,7 @@ func (r *ClickHouseReader) GetServices(ctx context.Context, queryParams *model.G
 		return nil, &model.ApiError{Typ: model.ErrorExec, Err: ErrNoIndexTable}
 	}
 
-	topLevelOps, apiErr := r.GetTopLevelOperations(ctx, skipConfig)
+	topLevelOps, allTopLevelOps, apiErr := r.GetTopLevelOperations(ctx, skipConfig, *queryParams.Start, *queryParams.End)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -798,6 +826,22 @@ func (r *ClickHouseReader) GetServices(ctx context.Context, queryParams *model.G
 			defer func() { <-sem }()
 			var serviceItem model.ServiceItem
 			var numErrors uint64
+
+			// Even if the total number of operations within the time range is less and the all
+			// the top level operations are high, we want to warn to let user know the issue
+			// with the instrumentation
+			serviceItem.DataWarning = model.DataWarning{
+				TopLevelOps: (*allTopLevelOps)[svc],
+			}
+
+			// default max_query_size = 262144
+			// Let's assume the average size of the item in `ops` is 50 bytes
+			// We can have 262144/50 = 5242 items in the `ops` array
+			// Although we have make it as big as 5k, We cap the number of items
+			// in the `ops` array to 1500
+
+			ops = ops[:int(math.Min(1500, float64(len(ops))))]
+
 			query := fmt.Sprintf(
 				`SELECT
 					quantile(0.99)(durationNano) as p99,
@@ -846,6 +890,10 @@ func (r *ClickHouseReader) GetServices(ctx context.Context, queryParams *model.G
 				return
 			}
 			subQuery, argsSubQuery, errStatus = buildQueryWithTagParams(ctx, tags)
+			if errStatus != nil {
+				zap.S().Error("Error building query with tag params: ", err)
+				return
+			}
 			query += subQuery
 			args = append(args, argsSubQuery...)
 			err = r.db.QueryRow(ctx, errorQuery, args...).Scan(&numErrors)
@@ -872,7 +920,7 @@ func (r *ClickHouseReader) GetServices(ctx context.Context, queryParams *model.G
 
 func (r *ClickHouseReader) GetServiceOverview(ctx context.Context, queryParams *model.GetServiceOverviewParams, skipConfig *model.SkipConfig) (*[]model.ServiceOverviewItem, *model.ApiError) {
 
-	topLevelOps, apiErr := r.GetTopLevelOperations(ctx, skipConfig)
+	topLevelOps, _, apiErr := r.GetTopLevelOperations(ctx, skipConfig, *queryParams.Start, *queryParams.End)
 	if apiErr != nil {
 		return nil, apiErr
 	}
@@ -1564,7 +1612,7 @@ func buildQueryWithTagParams(ctx context.Context, tags []model.TagQuery) (string
 		case model.NotExistsOperator:
 			subQuery, argsSubQuery = addExistsOperator(item, tagMapType, true)
 		default:
-			return "", nil, &model.ApiError{Typ: model.ErrorExec, Err: fmt.Errorf("Tag Operator %s not supported", item.GetOperator())}
+			return "", nil, &model.ApiError{Typ: model.ErrorExec, Err: fmt.Errorf("filter operator %s not supported", item.GetOperator())}
 		}
 		query += subQuery
 		args = append(args, argsSubQuery...)
@@ -3273,15 +3321,25 @@ func (r *ClickHouseReader) GetTotalSpans(ctx context.Context) (uint64, error) {
 	return totalSpans, nil
 }
 
-func (r *ClickHouseReader) GetSpansInLastHeartBeatInterval(ctx context.Context) (uint64, error) {
+func (r *ClickHouseReader) GetSpansInLastHeartBeatInterval(ctx context.Context, interval time.Duration) (uint64, error) {
 
 	var spansInLastHeartBeatInterval uint64
 
-	queryStr := fmt.Sprintf("SELECT count() from %s.%s where timestamp > toUnixTimestamp(now()-toIntervalMinute(%d));", signozTraceDBName, signozSpansTable, 30)
+	queryStr := fmt.Sprintf("SELECT count() from %s.%s where timestamp > toUnixTimestamp(now()-toIntervalMinute(%d));", signozTraceDBName, signozSpansTable, int(interval.Minutes()))
 
 	r.db.QueryRow(ctx, queryStr).Scan(&spansInLastHeartBeatInterval)
 
 	return spansInLastHeartBeatInterval, nil
+}
+
+func (r *ClickHouseReader) GetTotalLogs(ctx context.Context) (uint64, error) {
+
+	var totalLogs uint64
+
+	queryStr := fmt.Sprintf("SELECT count() from %s.%s;", r.logsDB, r.logsTable)
+	r.db.QueryRow(ctx, queryStr).Scan(&totalLogs)
+
+	return totalLogs, nil
 }
 
 func (r *ClickHouseReader) FetchTemporality(ctx context.Context, metricNames []string) (map[string]map[v3.Temporality]bool, error) {
@@ -3312,9 +3370,7 @@ func (r *ClickHouseReader) FetchTemporality(ctx context.Context, metricNames []s
 
 func (r *ClickHouseReader) GetTimeSeriesInfo(ctx context.Context) (map[string]interface{}, error) {
 
-	queryStr := fmt.Sprintf("SELECT count() as count from %s.%s group by metric_name order by count desc;", signozMetricDBName, signozTSTableName)
-
-	// r.db.Select(ctx, &tsByMetricName, queryStr)
+	queryStr := fmt.Sprintf("SELECT count() as count from %s.%s where metric_name not like 'signoz_%%' group by metric_name order by count desc;", signozMetricDBName, signozTSTableName)
 
 	rows, _ := r.db.Query(ctx, queryStr)
 
@@ -3343,11 +3399,21 @@ func (r *ClickHouseReader) GetTimeSeriesInfo(ctx context.Context) (map[string]in
 	return timeSeriesData, nil
 }
 
-func (r *ClickHouseReader) GetSamplesInfoInLastHeartBeatInterval(ctx context.Context) (uint64, error) {
+func (r *ClickHouseReader) GetSamplesInfoInLastHeartBeatInterval(ctx context.Context, interval time.Duration) (uint64, error) {
 
 	var totalSamples uint64
 
-	queryStr := fmt.Sprintf("select count() from %s.%s where timestamp_ms > toUnixTimestamp(now()-toIntervalMinute(%d))*1000;", signozMetricDBName, signozSampleTableName, 30)
+	queryStr := fmt.Sprintf("select count() from %s.%s where metric_name not like 'signoz_%%' and timestamp_ms > toUnixTimestamp(now()-toIntervalMinute(%d))*1000;", signozMetricDBName, signozSampleTableName, int(interval.Minutes()))
+
+	r.db.QueryRow(ctx, queryStr).Scan(&totalSamples)
+
+	return totalSamples, nil
+}
+
+func (r *ClickHouseReader) GetTotalSamples(ctx context.Context) (uint64, error) {
+	var totalSamples uint64
+
+	queryStr := fmt.Sprintf("select count() from %s.%s where metric_name not like 'signoz_%%';", signozMetricDBName, signozSampleTableName)
 
 	r.db.QueryRow(ctx, queryStr).Scan(&totalSamples)
 
@@ -3367,23 +3433,23 @@ func (r *ClickHouseReader) GetDistributedInfoInLastHeartBeatInterval(ctx context
 	return nil, nil
 }
 
-func (r *ClickHouseReader) GetLogsInfoInLastHeartBeatInterval(ctx context.Context) (uint64, error) {
+func (r *ClickHouseReader) GetLogsInfoInLastHeartBeatInterval(ctx context.Context, interval time.Duration) (uint64, error) {
 
 	var totalLogLines uint64
 
-	queryStr := fmt.Sprintf("select count() from %s.%s where timestamp > toUnixTimestamp(now()-toIntervalMinute(%d))*1000000000;", r.logsDB, r.logsTable, 30)
+	queryStr := fmt.Sprintf("select count() from %s.%s where timestamp > toUnixTimestamp(now()-toIntervalMinute(%d))*1000000000;", r.logsDB, r.logsTable, int(interval.Minutes()))
 
 	err := r.db.QueryRow(ctx, queryStr).Scan(&totalLogLines)
 
 	return totalLogLines, err
 }
 
-func (r *ClickHouseReader) GetTagsInfoInLastHeartBeatInterval(ctx context.Context) (*model.TagsInfo, error) {
+func (r *ClickHouseReader) GetTagsInfoInLastHeartBeatInterval(ctx context.Context, interval time.Duration) (*model.TagsInfo, error) {
 
 	queryStr := fmt.Sprintf(`select serviceName, stringTagMap['deployment.environment'] as env, 
 	stringTagMap['telemetry.sdk.language'] as language from %s.%s 
 	where timestamp > toUnixTimestamp(now()-toIntervalMinute(%d))
-	group by serviceName, env, language;`, r.TraceDB, r.indexTable, 1)
+	group by serviceName, env, language;`, r.TraceDB, r.indexTable, int(interval.Minutes()))
 
 	tagTelemetryDataList := []model.TagTelemetryData{}
 	err := r.db.Select(ctx, &tagTelemetryDataList, queryStr)
@@ -3396,6 +3462,7 @@ func (r *ClickHouseReader) GetTagsInfoInLastHeartBeatInterval(ctx context.Contex
 
 	tagsInfo := model.TagsInfo{
 		Languages: make(map[string]interface{}),
+		Services:  make(map[string]interface{}),
 	}
 
 	for _, tagTelemetryData := range tagTelemetryDataList {
@@ -3408,6 +3475,9 @@ func (r *ClickHouseReader) GetTagsInfoInLastHeartBeatInterval(ctx context.Contex
 		}
 		if len(tagTelemetryData.Language) != 0 {
 			tagsInfo.Languages[tagTelemetryData.Language] = struct{}{}
+		}
+		if len(tagTelemetryData.ServiceName) != 0 {
+			tagsInfo.Services[tagTelemetryData.ServiceName] = struct{}{}
 		}
 
 	}
@@ -3446,14 +3516,37 @@ func (r *ClickHouseReader) GetDashboardsInfo(ctx context.Context) (*model.Dashbo
 		zap.S().Debug("Error in processing sql query: ", err)
 		return &dashboardsInfo, err
 	}
+	totalDashboardsWithPanelAndName := 0
 	for _, dashboard := range dashboardsData {
+		if isDashboardWithPanelAndName(dashboard.Data) {
+			totalDashboardsWithPanelAndName = totalDashboardsWithPanelAndName + 1
+		}
 		dashboardsInfo = countPanelsInDashboard(dashboard.Data)
 	}
 	dashboardsInfo.TotalDashboards = len(dashboardsData)
-
+	dashboardsInfo.TotalDashboardsWithPanelAndName = totalDashboardsWithPanelAndName
 	return &dashboardsInfo, nil
 }
 
+func isDashboardWithPanelAndName(data map[string]interface{}) bool {
+	isDashboardName := false
+	isDashboardWithPanelAndName := false
+	if data != nil && data["title"] != nil && data["widgets"] != nil {
+		title, ok := data["title"].(string)
+		if ok && title != "Sample Title" {
+			isDashboardName = true
+		}
+		widgets, ok := data["widgets"].(interface{})
+		if ok && isDashboardName {
+			data, ok := widgets.([]interface{})
+			if ok && len(data) > 0 {
+				isDashboardWithPanelAndName = true
+			}
+		}
+	}
+
+	return isDashboardWithPanelAndName
+}
 func countPanelsInDashboard(data map[string]interface{}) model.DashboardsInfo {
 	var logsPanelCount, tracesPanelCount, metricsPanelCount int
 	// totalPanels := 0
@@ -3665,7 +3758,7 @@ func (r *ClickHouseReader) UpdateLogField(ctx context.Context, field *model.Upda
 			return &model.ApiError{Err: err, Typ: model.ErrorInternal}
 		}
 
-		for _, table := range []string{r.logsLocalTable, r.logsTable} {
+		for _, table := range []string{r.logsTable, r.logsLocalTable} {
 			// drop materialized column from logs table
 			query := "ALTER TABLE %s.%s ON CLUSTER %s DROP COLUMN IF EXISTS %s "
 			err := r.db.Exec(ctx, fmt.Sprintf(query,
@@ -3952,7 +4045,7 @@ func (r *ClickHouseReader) GetMetricAggregateAttributes(ctx context.Context, req
 	var rows driver.Rows
 	var response v3.AggregateAttributeResponse
 
-	query = fmt.Sprintf("SELECT DISTINCT metric_name, type from %s.%s WHERE metric_name ILIKE $1", signozMetricDBName, signozTSTableNameV41Day)
+	query = fmt.Sprintf("SELECT metric_name, type, is_monotonic, temporality FROM %s.%s WHERE metric_name ILIKE $1 GROUP BY metric_name, type, is_monotonic, temporality", signozMetricDBName, signozTSTableNameV41Day)
 	if req.Limit != 0 {
 		query = query + fmt.Sprintf(" LIMIT %d;", req.Limit)
 	}
@@ -3964,10 +4057,17 @@ func (r *ClickHouseReader) GetMetricAggregateAttributes(ctx context.Context, req
 	}
 	defer rows.Close()
 
-	var metricName, typ string
+	seen := make(map[string]struct{})
+
+	var metricName, typ, temporality string
+	var isMonotonic bool
 	for rows.Next() {
-		if err := rows.Scan(&metricName, &typ); err != nil {
+		if err := rows.Scan(&metricName, &typ, &isMonotonic, &temporality); err != nil {
 			return nil, fmt.Errorf("error while scanning rows: %s", err.Error())
+		}
+		// Non-monotonic cumulative sums are treated as gauges
+		if typ == "Sum" && !isMonotonic && temporality == string(v3.Cumulative) {
+			typ = "Gauge"
 		}
 		// unlike traces/logs `tag`/`resource` type, the `Type` will be metric type
 		key := v3.AttributeKey{
@@ -3976,6 +4076,11 @@ func (r *ClickHouseReader) GetMetricAggregateAttributes(ctx context.Context, req
 			Type:     v3.AttributeKeyType(typ),
 			IsColumn: true,
 		}
+		// remove duplicates
+		if _, ok := seen[metricName+typ]; ok {
+			continue
+		}
+		seen[metricName+typ] = struct{}{}
 		response.AttributeKeys = append(response.AttributeKeys, key)
 	}
 
@@ -3990,11 +4095,11 @@ func (r *ClickHouseReader) GetMetricAttributeKeys(ctx context.Context, req *v3.F
 	var response v3.FilterAttributeKeyResponse
 
 	// skips the internal attributes i.e attributes starting with __
-	query = fmt.Sprintf("SELECT DISTINCT arrayJoin(tagKeys) as distinctTagKey from (SELECT DISTINCT(JSONExtractKeys(labels)) tagKeys from %s.%s WHERE metric_name=$1) WHERE distinctTagKey ILIKE $2 AND distinctTagKey NOT LIKE '\\_\\_%%'", signozMetricDBName, signozTSTableName)
+	query = fmt.Sprintf("SELECT arrayJoin(tagKeys) AS distinctTagKey FROM (SELECT JSONExtractKeys(labels) AS tagKeys FROM %s.%s WHERE metric_name=$1 AND unix_milli >= $2 GROUP BY tagKeys) WHERE distinctTagKey ILIKE $3 AND distinctTagKey NOT LIKE '\\_\\_%%' GROUP BY distinctTagKey", signozMetricDBName, signozTSTableNameV41Day)
 	if req.Limit != 0 {
 		query = query + fmt.Sprintf(" LIMIT %d;", req.Limit)
 	}
-	rows, err = r.db.Query(ctx, query, req.AggregateAttribute, fmt.Sprintf("%%%s%%", req.SearchText))
+	rows, err = r.db.Query(ctx, query, req.AggregateAttribute, common.PastDayRoundOff(), fmt.Sprintf("%%%s%%", req.SearchText))
 	if err != nil {
 		zap.S().Error(err)
 		return nil, fmt.Errorf("error while executing query: %s", err.Error())
@@ -4025,11 +4130,11 @@ func (r *ClickHouseReader) GetMetricAttributeValues(ctx context.Context, req *v3
 	var rows driver.Rows
 	var attributeValues v3.FilterAttributeValueResponse
 
-	query = fmt.Sprintf("SELECT DISTINCT(JSONExtractString(labels, $1)) from %s.%s WHERE metric_name=$2 AND JSONExtractString(labels, $3) ILIKE $4", signozMetricDBName, signozTSTableName)
+	query = fmt.Sprintf("SELECT JSONExtractString(labels, $1) AS tagValue FROM %s.%s WHERE metric_name=$2 AND JSONExtractString(labels, $3) ILIKE $4 AND unix_milli >= $5 GROUP BY tagValue", signozMetricDBName, signozTSTableNameV41Day)
 	if req.Limit != 0 {
 		query = query + fmt.Sprintf(" LIMIT %d;", req.Limit)
 	}
-	rows, err = r.db.Query(ctx, query, req.FilterAttributeKey, req.AggregateAttribute, req.FilterAttributeKey, fmt.Sprintf("%%%s%%", req.SearchText))
+	rows, err = r.db.Query(ctx, query, req.FilterAttributeKey, req.AggregateAttribute, req.FilterAttributeKey, fmt.Sprintf("%%%s%%", req.SearchText), common.PastDayRoundOff())
 
 	if err != nil {
 		zap.S().Error(err)
@@ -4576,10 +4681,26 @@ func readRowsForTimeSeriesResult(rows driver.Rows, vars []interface{}, columnNam
 	return seriesList, nil
 }
 
+func logComment(ctx context.Context) string {
+	// Get the key-value pairs from context for log comment
+	kv := ctx.Value("log_comment")
+	if kv == nil {
+		return ""
+	}
+
+	logCommentKVs, ok := kv.(map[string]string)
+	if !ok {
+		return ""
+	}
+
+	x, _ := json.Marshal(logCommentKVs)
+	return string(x)
+}
+
 // GetTimeSeriesResultV3 runs the query and returns list of time series
 func (r *ClickHouseReader) GetTimeSeriesResultV3(ctx context.Context, query string) ([]*v3.Series, error) {
 
-	defer utils.Elapsed("GetTimeSeriesResultV3", query)()
+	defer utils.Elapsed("GetTimeSeriesResultV3", query, fmt.Sprintf("logComment: %s", logComment(ctx)))()
 
 	rows, err := r.db.Query(ctx, query)
 
@@ -4604,7 +4725,7 @@ func (r *ClickHouseReader) GetTimeSeriesResultV3(ctx context.Context, query stri
 // GetListResultV3 runs the query and returns list of rows
 func (r *ClickHouseReader) GetListResultV3(ctx context.Context, query string) ([]*v3.Row, error) {
 
-	defer utils.Elapsed("GetListResultV3", query)()
+	defer utils.Elapsed("GetListResultV3", query, fmt.Sprintf("logComment: %s", logComment(ctx)))()
 
 	rows, err := r.db.Query(ctx, query)
 

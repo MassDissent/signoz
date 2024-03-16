@@ -118,6 +118,10 @@ export const IngestionSettings = Loadable(
 	() => import(/* webpackChunkName: "Ingestion Settings" */ 'pages/Settings'),
 );
 
+export const APIKeys = Loadable(
+	() => import(/* webpackChunkName: "All Settings" */ 'pages/Settings'),
+);
+
 export const MySettings = Loadable(
 	() => import(/* webpackChunkName: "All MySettings" */ 'pages/MySettings'),
 );
@@ -181,4 +185,23 @@ export const SupportPage = Loadable(
 export const WorkspaceBlocked = Loadable(
 	() =>
 		import(/* webpackChunkName: "WorkspaceLocked" */ 'pages/WorkspaceLocked'),
+);
+
+export const ShortcutsPage = Loadable(
+	() => import(/* webpackChunkName: "ShortcutsPage" */ 'pages/Shortcuts'),
+);
+
+export const InstalledIntegrations = Loadable(
+	() =>
+		import(
+			/* webpackChunkName: "InstalledIntegrations" */ 'pages/IntegrationsModulePage'
+		),
+);
+
+export const IntegrationsMarketPlace = Loadable(
+	// eslint-disable-next-line sonarjs/no-identical-functions
+	() =>
+		import(
+			/* webpackChunkName: "IntegrationsMarketPlace" */ 'pages/IntegrationsModulePage'
+		),
 );

@@ -52,6 +52,7 @@ const DashboardContext = createContext<IDashboardContext>({
 	updatedTimeRef: {} as React.MutableRefObject<Dayjs | null>,
 	toScrollWidgetId: '',
 	setToScrollWidgetId: () => {},
+	updateLocalStorageDashboardVariables: () => {},
 });
 
 interface Props {
@@ -96,9 +97,10 @@ export function DashboardProvider({
 
 	const [selectedDashboard, setSelectedDashboard] = useState<Dashboard>();
 
-	const { currentDashboard } = useDashboardVariablesFromLocalStorage(
-		dashboardId,
-	);
+	const {
+		currentDashboard,
+		updateLocalStorageDashboardVariables,
+	} = useDashboardVariablesFromLocalStorage(dashboardId);
 
 	const updatedTimeRef = useRef<Dayjs | null>(null); // Using ref to store the updated time
 	const modalRef = useRef<any>(null);
@@ -116,9 +118,10 @@ export function DashboardProvider({
 		if (data && localStorageVariables) {
 			const updatedVariables = data.data.variables;
 			Object.keys(data.data.variables).forEach((variable) => {
+				const variableData = data.data.variables[variable];
 				const updatedVariable = {
 					...data.data.variables[variable],
-					...localStorageVariables[variable as any],
+					...localStorageVariables[variableData.name as any],
 				};
 
 				updatedVariables[variable] = updatedVariable;
@@ -319,6 +322,7 @@ export function DashboardProvider({
 			setSelectedDashboard,
 			updatedTimeRef,
 			setToScrollWidgetId,
+			updateLocalStorageDashboardVariables,
 		}),
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 		[
@@ -329,6 +333,8 @@ export function DashboardProvider({
 			dashboardId,
 			layouts,
 			toScrollWidgetId,
+			updateLocalStorageDashboardVariables,
+			currentDashboard,
 		],
 	);
 

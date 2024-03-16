@@ -7,13 +7,15 @@ import dayjs from 'dayjs';
 import dompurify from 'dompurify';
 import { useIsDarkMode } from 'hooks/useDarkMode';
 import { FlatLogData } from 'lib/logs/flatLogData';
-import { defaultTo } from 'lodash-es';
 import { useMemo } from 'react';
 
-import LogStateIndicator, {
-	LogType,
-} from '../LogStateIndicator/LogStateIndicator';
-import { defaultTableStyle, getDefaultCellStyle } from './config';
+import LogStateIndicator from '../LogStateIndicator/LogStateIndicator';
+import { getLogIndicatorTypeForTable } from '../LogStateIndicator/utils';
+import {
+	defaultListViewPanelStyle,
+	defaultTableStyle,
+	getDefaultCellStyle,
+} from './config';
 import { TableBodyContent } from './styles';
 import {
 	ColumnTypeRender,
@@ -31,6 +33,7 @@ export const useTableView = (props: UseTableViewProps): UseTableViewResult => {
 		appendTo = 'center',
 		activeContextLog,
 		activeLog,
+		isListViewPanel,
 	} = props;
 
 	const isDarkMode = useIsDarkMode();
@@ -48,7 +51,9 @@ export const useTableView = (props: UseTableViewProps): UseTableViewResult => {
 				key: name,
 				render: (field): ColumnTypeRender<Record<string, unknown>> => ({
 					props: {
-						style: getDefaultCellStyle(isDarkMode),
+						style: isListViewPanel
+							? defaultListViewPanelStyle
+							: getDefaultCellStyle(isDarkMode),
 					},
 					children: (
 						<Typography.Paragraph ellipsis={{ rows: linesPerRow }}>
@@ -57,6 +62,10 @@ export const useTableView = (props: UseTableViewProps): UseTableViewResult => {
 					),
 				}),
 			}));
+
+		if (isListViewPanel) {
+			return [...fieldColumns];
+		}
 
 		return [
 			{
@@ -73,7 +82,7 @@ export const useTableView = (props: UseTableViewProps): UseTableViewResult => {
 						children: (
 							<div className="table-timestamp">
 								<LogStateIndicator
-									type={defaultTo(item.log_level, LogType.INFO) as string}
+									type={getLogIndicatorTypeForTable(item)}
 									isActive={
 										activeLog?.id === item.id || activeContextLog?.id === item.id
 									}
@@ -110,6 +119,7 @@ export const useTableView = (props: UseTableViewProps): UseTableViewResult => {
 		];
 	}, [
 		fields,
+		isListViewPanel,
 		appendTo,
 		isDarkMode,
 		linesPerRow,

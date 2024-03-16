@@ -53,7 +53,7 @@ export const Options: Option[] = [
 	{ value: '1day', label: 'Last 1 day' },
 	{ value: '3days', label: 'Last 3 days' },
 	{ value: '1week', label: 'Last 1 week' },
-	{ value: 'custom', label: 'Custom...' },
+	{ value: 'custom', label: 'Custom' },
 ];
 
 export interface Option {
@@ -117,10 +117,15 @@ export const routesToSkip = [
 	ROUTES.ALL_CHANNELS,
 	ROUTES.USAGE_EXPLORER,
 	ROUTES.GET_STARTED,
+	ROUTES.GET_STARTED_APPLICATION_MONITORING,
+	ROUTES.GET_STARTED_INFRASTRUCTURE_MONITORING,
+	ROUTES.GET_STARTED_LOGS_MANAGEMENT,
+	ROUTES.GET_STARTED_AWS_MONITORING,
 	ROUTES.VERSION,
 	ROUTES.ALL_DASHBOARD,
 	ROUTES.ORG_SETTINGS,
 	ROUTES.INGESTION_SETTINGS,
+	ROUTES.API_KEYS,
 	ROUTES.ERROR_DETAIL,
 	ROUTES.LOGS_PIPELINES,
 	ROUTES.BILLING,
@@ -133,6 +138,10 @@ export const routesToSkip = [
 	ROUTES.LOGS_PIPELINES,
 	ROUTES.TRACES_EXPLORER,
 	ROUTES.TRACES_SAVE_VIEWS,
+	ROUTES.SHORTCUTS,
+	ROUTES.INTEGRATIONS_BASE,
+	ROUTES.INTEGRATIONS_INSTALLED,
+	ROUTES.INTEGRATIONS_MARKETPLACE,
 ];
 
 export const routesToDisable = [ROUTES.LOGS_EXPLORER, ROUTES.LIVE_LOGS];
@@ -145,4 +154,9 @@ export interface LocalStorageTimeRange {
 export interface TimeRange {
 	startTime: string;
 	endTime: string;
+}
+
+export enum LexicalContext {
+	CUSTOM_DATE_PICKER = 'customDatePicker',
+	CUSTOM_DATE_TIME_INPUT = 'customDateTimeInput',
 }

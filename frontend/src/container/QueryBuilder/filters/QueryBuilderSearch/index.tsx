@@ -2,12 +2,17 @@ import './QueryBuilderSearch.styles.scss';
 
 import { Select, Spin, Tag, Tooltip } from 'antd';
 import { OPERATORS } from 'constants/queryBuilder';
+import { LogsExplorerShortcuts } from 'constants/shortcuts/logsExplorerShortcuts';
 import { getDataTypes } from 'container/LogDetailedView/utils';
+import { useKeyboardHotkeys } from 'hooks/hotkeys/useKeyboardHotkeys';
 import {
 	useAutoComplete,
 	WhereClauseConfig,
 } from 'hooks/queryBuilder/useAutoComplete';
 import { useFetchKeysAndValues } from 'hooks/queryBuilder/useFetchKeysAndValues';
+import { useQueryBuilder } from 'hooks/queryBuilder/useQueryBuilder';
+import { isEqual } from 'lodash-es';
+import type { BaseSelectRef } from 'rc-select';
 import {
 	KeyboardEvent,
 	ReactElement,
@@ -15,6 +20,8 @@ import {
 	useCallback,
 	useEffect,
 	useMemo,
+	useRef,
+	useState,
 } from 'react';
 import {
 	BaseAutocompleteData,
@@ -52,6 +59,7 @@ function QueryBuilderSearch({
 		updateTag,
 		handleClearTag,
 		handleKeyDown,
+		handleOnBlur,
 		handleSearch,
 		handleSelect,
 		tags,
@@ -63,11 +71,17 @@ function QueryBuilderSearch({
 		searchKey,
 	} = useAutoComplete(query, whereClauseConfig);
 
+	const [isOpen, setIsOpen] = useState<boolean>(false);
+	const selectRef = useRef<BaseSelectRef>(null);
 	const { sourceKeys, handleRemoveSourceKey } = useFetchKeysAndValues(
 		searchValue,
 		query,
 		searchKey,
 	);
+
+	const { registerShortcut, deregisterShortcut } = useKeyboardHotkeys();
+
+	const { handleRunQuery, currentQuery } = useQueryBuilder();
 
 	const onTagRender = ({
 		value,
@@ -119,6 +133,13 @@ function QueryBuilderSearch({
 	const onInputKeyDownHandler = (event: KeyboardEvent<Element>): void => {
 		if (isMulti || event.key === 'Backspace') handleKeyDown(event);
 		if (isExistsNotExistsOperator(searchValue)) handleKeyDown(event);
+
+		if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+			event.preventDefault();
+			event.stopPropagation();
+			handleRunQuery();
+			setIsOpen(false);
+		}
 	};
 
 	const handleDeselect = useCallback(
@@ -182,8 +203,31 @@ function QueryBuilderSearch({
 		});
 
 		onChange(initialTagFilters);
-		/* eslint-disable react-hooks/exhaustive-deps */
+		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [sourceKeys]);
+
+	const isLastQuery = useMemo(
+		() =>
+			isEqual(
+				currentQuery.builder.queryData[currentQuery.builder.queryData.length - 1],
+				query,
+			),
+		[currentQuery, query],
+	);
+
+	useEffect(() => {
+		if (isLastQuery) {
+			registerShortcut(LogsExplorerShortcuts.FocusTheSearchBar, () => {
+				// set timeout is needed here else the select treats the hotkey as input value
+				setTimeout(() => {
+					selectRef.current?.focus();
+				}, 0);
+			});
+		}
+
+		return (): void =>
+			deregisterShortcut(LogsExplorerShortcuts.FocusTheSearchBar);
+	}, [deregisterShortcut, isLastQuery, registerShortcut]);
 
 	return (
 		<div
@@ -192,11 +236,14 @@ function QueryBuilderSearch({
 			}}
 		>
 			<Select
+				ref={selectRef}
 				getPopupContainer={popupContainer}
 				virtual
 				showSearch
 				tagRender={onTagRender}
 				filterOption={false}
+				open={isOpen}
+				onDropdownVisibleChange={setIsOpen}
 				autoClearSearchValue={false}
 				mode="multiple"
 				placeholder={placeholder}
@@ -213,6 +260,8 @@ function QueryBuilderSearch({
 				onInputKeyDown={onInputKeyDownHandler}
 				notFoundContent={isFetching ? <Spin size="small" /> : null}
 				suffixIcon={suffixIcon}
+				showAction={['focus']}
+				onBlur={handleOnBlur}
 			>
 				{options.map((option) => (
 					<Select.Option key={option.label} value={option.value}>

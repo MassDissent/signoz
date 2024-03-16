@@ -211,14 +211,18 @@ function DateTimeSelection({
 			const routesObject = JSON.parse(routes || '{}');
 			const selectedTime = routesObject[pathName];
 
-			let parsedSelectedTime: TimeRange;
-			try {
-				parsedSelectedTime = JSON.parse(selectedTime);
-			} catch {
-				parsedSelectedTime = selectedTime;
-			}
-			if (isObject(parsedSelectedTime)) {
-				return 'custom';
+			if (selectedTime) {
+				let parsedSelectedTime: TimeRange;
+				try {
+					parsedSelectedTime = JSON.parse(selectedTime);
+				} catch {
+					parsedSelectedTime = selectedTime;
+				}
+				if (isObject(parsedSelectedTime)) {
+					return 'custom';
+				}
+
+				return selectedTime;
 			}
 		}
 
@@ -318,21 +322,23 @@ function DateTimeSelection({
 		if (dateTimeRange !== null) {
 			const [startTimeMoment, endTimeMoment] = dateTimeRange;
 			if (startTimeMoment && endTimeMoment) {
+				const startTime = startTimeMoment;
+				const endTime = endTimeMoment;
 				setCustomDTPickerVisible(false);
-				startTimeMoment.startOf('day').toString();
 				updateTimeInterval('custom', [
-					startTimeMoment.startOf('day').toDate().getTime(),
-					endTimeMoment.endOf('day').toDate().getTime(),
+					startTime.toDate().getTime(),
+					endTime.toDate().getTime(),
 				]);
-				setLocalStorageKey('startTime', startTimeMoment.toString());
-				setLocalStorageKey('endTime', endTimeMoment.toString());
-				updateLocalStorageForRoutes(
-					JSON.stringify({ startTime: startTimeMoment, endTime: endTimeMoment }),
-				);
+				setLocalStorageKey('startTime', startTime.toString());
+				setLocalStorageKey('endTime', endTime.toString());
+				updateLocalStorageForRoutes(JSON.stringify({ startTime, endTime }));
 
 				if (!isLogsExplorerPage) {
-					urlQuery.set(QueryParams.startTime, startTimeMoment.toString());
-					urlQuery.set(QueryParams.endTime, endTimeMoment.toString());
+					urlQuery.set(
+						QueryParams.startTime,
+						startTime?.toDate().getTime().toString(),
+					);
+					urlQuery.set(QueryParams.endTime, endTime?.toDate().getTime().toString());
 					const generatedUrl = `${location.pathname}?${urlQuery.toString()}`;
 					history.replace(generatedUrl);
 				}
@@ -380,6 +386,17 @@ function DateTimeSelection({
 		setRefreshButtonHidden(updatedTime === 'custom');
 
 		updateTimeInterval(updatedTime, [preStartTime, preEndTime]);
+
+		if (updatedTime !== 'custom') {
+			const { minTime, maxTime } = GetMinMax(updatedTime);
+			urlQuery.set(QueryParams.startTime, minTime.toString());
+			urlQuery.set(QueryParams.endTime, maxTime.toString());
+		} else {
+			urlQuery.set(QueryParams.startTime, preStartTime.toString());
+			urlQuery.set(QueryParams.endTime, preEndTime.toString());
+		}
+		const generatedUrl = `${location.pathname}?${urlQuery.toString()}`;
+		history.replace(generatedUrl);
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, [location.pathname, updateTimeInterval, globalTimeLoading]);
 

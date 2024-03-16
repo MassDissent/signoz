@@ -3,6 +3,7 @@ import './LogsExplorerViews.styles.scss';
 
 import { Button } from 'antd';
 import LogsFormatOptionsMenu from 'components/LogsFormatOptionsMenu/LogsFormatOptionsMenu';
+import { DEFAULT_ENTITY_VERSION } from 'constants/app';
 import { LOCALSTORAGE } from 'constants/localStorage';
 import { AVAILABLE_EXPORT_PANEL_TYPES } from 'constants/panelTypes';
 import { QueryParams } from 'constants/query';
@@ -189,13 +190,19 @@ function LogsExplorerViews({
 		data: listChartData,
 		isFetching: isFetchingListChartData,
 		isLoading: isLoadingListChartData,
-	} = useGetExplorerQueryRange(listChartQuery, PANEL_TYPES.TIME_SERIES, {
-		enabled: !!listChartQuery && panelType === PANEL_TYPES.LIST,
-	});
+	} = useGetExplorerQueryRange(
+		listChartQuery,
+		PANEL_TYPES.TIME_SERIES,
+		DEFAULT_ENTITY_VERSION,
+		{
+			enabled: !!listChartQuery && panelType === PANEL_TYPES.LIST,
+		},
+	);
 
 	const { data, isLoading, isFetching, isError } = useGetExplorerQueryRange(
 		requestData,
 		panelType,
+		DEFAULT_ENTITY_VERSION,
 		{
 			keepPreviousData: true,
 			enabled: !isLimit && !!requestData,
@@ -395,7 +402,7 @@ function LogsExplorerViews({
 			handleSetConfig(defaultTo(panelTypes, PANEL_TYPES.LIST), DataSource.LOGS);
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, []);
+	}, [handleSetConfig, panelTypes]);
 
 	useEffect(() => {
 		const currentParams = data?.params as Omit<LogTimeRange, 'pageSize'>;
@@ -539,6 +546,7 @@ function LogsExplorerViews({
 								(isMultipleQueries || isGroupByExist) && selectedView !== 'search'
 							}
 							onClick={(): void => handleModeChange(PANEL_TYPES.LIST)}
+							data-testid="logs-list-view"
 						>
 							List view
 						</Button>
@@ -551,6 +559,7 @@ function LogsExplorerViews({
 									: 'tab'
 							}
 							onClick={(): void => handleModeChange(PANEL_TYPES.TIME_SERIES)}
+							data-testid="time-series-view"
 						>
 							Time series
 						</Button>
@@ -561,6 +570,7 @@ function LogsExplorerViews({
 								selectedPanelType === PANEL_TYPES.TABLE ? 'selected_view tab' : 'tab'
 							}
 							onClick={(): void => handleModeChange(PANEL_TYPES.TABLE)}
+							data-testid="table-view"
 						>
 							Table
 						</Button>
@@ -608,6 +618,7 @@ function LogsExplorerViews({
 							data={data}
 							isError={isError}
 							isFilterApplied={!isEmpty(listQuery?.filters.items)}
+							dataSource={DataSource.LOGS}
 						/>
 					)}
 

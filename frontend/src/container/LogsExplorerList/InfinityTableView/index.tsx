@@ -68,6 +68,7 @@ const InfinityTable = forwardRef<TableVirtuosoHandle, InfinityTableProps>(
 			activeLog,
 			activeContextLog,
 		});
+
 		const { draggedColumns, onDragColumns } = useDragColumns<
 			Record<string, unknown>
 		>(LOCALSTORAGE.LOGS_LIST_COLUMNS);
@@ -133,6 +134,9 @@ const InfinityTable = forwardRef<TableVirtuosoHandle, InfinityTableProps>(
 			<>
 				<TableVirtuoso
 					ref={ref}
+					initialTopMostItemIndex={
+						tableViewProps.activeLogIndex !== -1 ? tableViewProps.activeLogIndex : 0
+					}
 					style={infinityDefaultStyles}
 					data={dataSource}
 					components={{
